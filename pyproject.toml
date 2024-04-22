@@ -1,0 +1,21 @@
+
+[project]
+name = "serial2websocket"
+version = "0.1.0"
+dependencies = [
+    "pyserial",
+    "websockets",
+]
+
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+
+[project.scripts]
+serial2websocket = "serial2websocket.main:main"
+
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
