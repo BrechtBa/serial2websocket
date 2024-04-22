@@ -7,7 +7,7 @@ from typing import Optional, Callable
 from signal import SIGINT, SIGTERM
 
 from serial import Serial
-
+from serial.serialutil import EIGHTBITS, PARITY_NONE, STOPBITS_ONE
 from argparse import ArgumentParser
 
 
@@ -33,9 +33,12 @@ class ISerialConnection:
 
 
 class SerialConnection(ISerialConnection):
-    def __init__(self, port: str, baudrate: int):
-        self._port = port
+    def __init__(self, device: str, baudrate: int, bytesize=EIGHTBITS, parity=PARITY_NONE, stopbits=STOPBITS_ONE):
+        self._device = device
         self._baudrate = baudrate
+        self._bytesize = bytesize
+        self._parity = parity
+        self._stopbits = stopbits
 
         self._serial: Optional[Serial] = None
 
@@ -46,7 +49,7 @@ class SerialConnection(ISerialConnection):
     def open(self):
         self.close()
 
-        self._serial = Serial(self._port, self._baudrate)
+        self._serial = Serial(self._device, self._baudrate)
         self._serial.open()
 
     def close(self):
@@ -153,9 +156,17 @@ def main():
     parser.add_argument("port", type=int, default=9899, help="websocket port")
 
     parser.add_argument("-b", "--baudrate", type=int, default=19200)
+    parser.add_argument("-s", "--bytesize", type=int, default=EIGHTBITS)
+    parser.add_argument("-p", "--parity", type=str, default=PARITY_NONE)
+    parser.add_argument("-t", "--stopbits", type=int, default=STOPBITS_ONE)
     args = parser.parse_args()
 
-    server = Serial2WebsocketServer(args.port, args.baudrate)
+    serial_connection = SerialConnection(
+        device=args.device, baudrate=args.baudrate, bytesize=args.bytesize, parity=args.parity, stopbits=args.stopbits)
+    websocket_server = WebsocketServer(
+        host=args.host, port=args.port, message_consumer=serial_connection.write)
+
+    server = Serial2WebsocketServer(serial_connection, websocket_server)
 
     loop = asyncio.new_event_loop()
     loop.add_signal_handler(SIGINT, server.stop)
