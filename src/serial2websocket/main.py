@@ -167,34 +167,6 @@ class Serial2WebsocketServer:
         self._websocket_server.stop()
 
 
-class MockSerialServer(ISerialConnection):
-    def __init__(self, read_buffer=None):
-        self._is_open = False
-        self._read_buffer = read_buffer or []
-        self.write_buffer = []
-
-    @property
-    def is_open(self) -> bool:
-        return self._is_open
-
-    def open(self) -> None:
-        self._is_open = True
-
-    def close(self) -> None:
-        self._is_open = False
-
-    def write(self, raw: str) -> None:
-        if self._is_open:
-            logger.info(raw)
-
-    def read(self) -> Optional[str]:
-        if self._is_open:
-            try:
-                return self._read_buffer.pop(0)
-            except IndexError:
-                pass
-
-
 def main():
     parser = ArgumentParser()
     parser.add_argument("device", type=str, help="serial port device, e.g. /dev/ttyS0")
