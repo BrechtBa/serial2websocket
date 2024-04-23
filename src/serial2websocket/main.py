@@ -1,12 +1,14 @@
 import asyncio
 import logging
+import sys
+
 import websockets
 from websockets.legacy.server import WebSocketServerProtocol
 
 from typing import Optional, Callable
 from signal import SIGINT, SIGTERM
 
-from serial import Serial
+from serial import Serial, SerialException
 from serial.serialutil import EIGHTBITS, PARITY_NONE, STOPBITS_ONE
 from argparse import ArgumentParser
 
@@ -19,7 +21,7 @@ class ISerialConnection:
     def is_open(self):
         raise NotImplementedError
 
-    def open(self):
+    async def open(self):
         raise NotImplementedError
 
     def close(self):
@@ -28,47 +30,59 @@ class ISerialConnection:
     def write(self, raw: str):
         raise NotImplementedError
 
-    def read(self) -> Optional[str]:
+    async def read(self) -> Optional[str]:
         raise NotImplementedError
 
 
 class SerialConnection(ISerialConnection):
-    def __init__(self, device: str, baudrate: int, bytesize=EIGHTBITS, parity=PARITY_NONE, stopbits=STOPBITS_ONE):
+    def __init__(self, device: str, baudrate: int = 9600, bytesize=EIGHTBITS, parity=PARITY_NONE, stopbits=STOPBITS_ONE):
         self._device = device
         self._baudrate = baudrate
         self._bytesize = bytesize
         self._parity = parity
         self._stopbits = stopbits
 
-        self._serial: Optional[Serial] = None
+        self._stop_event = asyncio.Event()
+        self._serial = Serial(baudrate=self._baudrate)
 
     @property
     def is_open(self):
         return self._serial is not None and self._serial.is_open
 
-    def open(self):
-        self.close()
-
-        self._serial = Serial(self._device, self._baudrate)
-        self._serial.open()
+    async def open(self):
+        self._serial.close()
+        if not self._stop_event.is_set():
+            self._serial.port = self._device
+            try:
+                self._serial.open()
+                logger.info("opened serial connection at %s", self._device)
+            except SerialException as e:
+                logger.error("error opening serial connection %s, retrying", e)
+                await asyncio.sleep(5)
+                await self.open()
 
     def close(self):
-        if self.is_open:
+        self._stop_event.set()
+        logger.info("closing serial connection")
+        if self._serial.is_open:
             self._serial.close()
 
     def write(self, raw: str):
         try:
+            print("writing")
             self._serial.write(str.encode(raw.upper() + '\r\n'))
             self._serial.flush()
         except Exception as e:  # noqa
-            logger.error("Serial error try to reconnect")
+            logger.error("serial error try to reconnect")
             self.open()
 
-    def read(self) -> str:
+    async def read(self) -> str:
         if self.is_open:
             try:
-                line = self._serial.readline()
+                loop = asyncio.get_running_loop()
+                line = await loop.run_in_executor(None, self._serial.readline)
                 return line.strip().decode('utf8')
+
             except Exception as e:  # noqa
                 logger.error("could not read %s" % e)
                 try:
@@ -101,11 +115,12 @@ class WebsocketServer(IWebsocketServer):
         for client in self._clients:
             try:
                 await client.send(message)
+                logger.debug("sent message %s to client %s", message, client)
             except Exception:  # noqa
-                logger.error("Could not send message to client")
+                logger.error("could not send message to client")
 
     async def connect_client(self, websocket: WebSocketServerProtocol):
-        logger.info("Connecting client")
+        logger.info("connecting client")
         self._clients.add(websocket)
         try:
             async for message in websocket:
@@ -114,7 +129,7 @@ class WebsocketServer(IWebsocketServer):
             await websocket.wait_closed()
         finally:
             self._clients.remove(websocket)
-            logger.info("Disconnected client")
+            logger.info("disconnected client")
 
     async def start(self):
         async with websockets.serve(self.connect_client, self._host, self._port):
@@ -133,12 +148,14 @@ class Serial2WebsocketServer:
 
     async def start(self):
         logger.info("starting")
-        self._serial_connection.open()
+        await self._serial_connection.open()
         task = asyncio.create_task(self._websocket_server.start())
 
+        logger.info("listening for serial messages")
         while not self._stop_event.is_set():
-            line = self._serial_connection.read()
+            line = await self._serial_connection.read()
             if line is not None:
+                logger.debug("read message from serial device %s", line)
                 await self._websocket_server.send_message(line)
             await asyncio.sleep(0.01)
         await task
@@ -146,23 +163,57 @@ class Serial2WebsocketServer:
     def stop(self):
         logger.info("stopping")
         self._stop_event.set()
+        self._serial_connection.close()
         self._websocket_server.stop()
+
+
+class MockSerialServer(ISerialConnection):
+    def __init__(self, read_buffer=None):
+        self._is_open = False
+        self._read_buffer = read_buffer or []
+        self.write_buffer = []
+
+    @property
+    def is_open(self) -> bool:
+        return self._is_open
+
+    def open(self) -> None:
+        self._is_open = True
+
+    def close(self) -> None:
+        self._is_open = False
+
+    def write(self, raw: str) -> None:
+        if self._is_open:
+            logger.info(raw)
+
+    def read(self) -> Optional[str]:
+        if self._is_open:
+            try:
+                return self._read_buffer.pop(0)
+            except IndexError:
+                pass
 
 
 def main():
     parser = ArgumentParser()
     parser.add_argument("device", type=str, help="serial port device, e.g. /dev/ttyS0")
-    parser.add_argument("host", type=str, default="localhost", help="websocket host, set to 0.0.0.0 to make it network accessible")
-    parser.add_argument("port", type=int, default=9899, help="websocket port")
+    parser.add_argument("--host", type=str, default="localhost", help="websocket host, set to 0.0.0.0 to make it network accessible")
+    parser.add_argument("--port", type=int, default=9899, help="websocket port")
 
     parser.add_argument("-b", "--baudrate", type=int, default=19200)
     parser.add_argument("-s", "--bytesize", type=int, default=EIGHTBITS)
     parser.add_argument("-p", "--parity", type=str, default=PARITY_NONE)
     parser.add_argument("-t", "--stopbits", type=int, default=STOPBITS_ONE)
+    parser.add_argument("-l", "--loglevel", type=str, default="INFO")
+
     args = parser.parse_args()
+
+    logging.basicConfig(level=logging.getLevelName(args.loglevel), stream=sys.stdout)
 
     serial_connection = SerialConnection(
         device=args.device, baudrate=args.baudrate, bytesize=args.bytesize, parity=args.parity, stopbits=args.stopbits)
+    # serial_connection = MockSerialServer(["test1", "test2"])
     websocket_server = WebsocketServer(
         host=args.host, port=args.port, message_consumer=serial_connection.write)
 
