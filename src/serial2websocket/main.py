@@ -69,7 +69,6 @@ class SerialConnection(ISerialConnection):
 
     def write(self, raw: str):
         try:
-            print("writing")
             self._serial.write(str.encode(raw.upper() + '\r\n'))
             self._serial.flush()
         except Exception as e:  # noqa
