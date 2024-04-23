@@ -213,7 +213,6 @@ def main():
 
     serial_connection = SerialConnection(
         device=args.device, baudrate=args.baudrate, bytesize=args.bytesize, parity=args.parity, stopbits=args.stopbits)
-    # serial_connection = MockSerialServer(["test1", "test2"])
     websocket_server = WebsocketServer(
         host=args.host, port=args.port, message_consumer=serial_connection.write)
 
