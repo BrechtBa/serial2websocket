@@ -149,6 +149,10 @@ class Serial2WebsocketServer:
     async def start(self):
         logger.info("starting")
         await self._serial_connection.open()
+
+        if self._stop_event.is_set():
+            return
+
         task = asyncio.create_task(self._websocket_server.start())
 
         logger.info("listening for serial messages")
